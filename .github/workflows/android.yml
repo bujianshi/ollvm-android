@@ -1,0 +1,112 @@
+name: Build & Publish Debug APK
+
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v1
+        with:
+          submodules: true
+
+      - name: install deps (debug)
+        run: |
+          sudo apt install tree -y
+
+      - name: set up JDK 1.8
+        uses: actions/setup-java@v1
+        with:
+          java-version: 1.8
+
+      - name: Make Gradle executable
+        run: chmod +x ./gradlew
+
+      - name: Cache multiple paths
+        id: cache-ollvm
+        uses: actions/cache@v2
+        with:
+          path: |
+            ~/ollvm
+          key: ${{ runner.os }}-ollvm
+
+      - name: Build OLLVM
+        if: steps.cache-ollvm.outputs.cache-hit != 'true'
+        run: |
+          # build
+          git clone -b llvm-4.0 https://github.com/obfuscator-llvm/obfuscator.git --depth 1
+          mkdir ${GITHUB_WORKSPACE}/ollvm
+          mkdir ollvm.build && cd ollvm.build
+          cmake \
+          -DCMAKE_INSTALL_PREFIX=${GITHUB_WORKSPACE}/ollvm \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DLLVM_INCLUDE_TESTS=OFF -DLLVM_BUILD_TESTS=OFF -DLLVM_INCLUDE_GO_TESTS=OFF \
+          -DLLVM_BUILD_DOCS=OFF -DLLVM_INCLUDE_DOCS=OFF -DLLVM_ENABLE_DOXYGEN=OFF -DLLVM_ENABLE_SPHINX=OFF -FLLVM_ENABLE_OCAMLDOC=OFF \
+          ../obfuscator
+          make -j4
+          sudo cmake -DCMAKE_INSTALL_PREFIX=${GITHUB_WORKSPACE}/ollvm -P cmake_install.cmake
+          cd ..
+          sudo rm -rf obfuscator
+          sudo rm -rf ${GITHUB_WORKSPACE}/ollvm/include
+          sudo rm -rf ${GITHUB_WORKSPACE}/ollvm/libexec
+          sudo rm -rf ${GITHUB_WORKSPACE}/ollvm/share
+          sudo rm -rf ollvm.build
+          sudo chown -v -R $(stat -c '%U' .git):$(stat -c '%G' .git) ${GITHUB_WORKSPACE}/ollvm # sudo chown -v -R runner:docker ${GITHUB_WORKSPACE}/ollvm
+          echo $(stat -c '%U' .git):$(stat -c '%G' .git)
+          mv ${GITHUB_WORKSPACE}/ollvm ~/
+
+      - name: (debug)
+        run: |
+          tree ~ -L 4
+          du -h --max-depth=4 ~
+          ls -R -alh ~
+
+      - name: download ndk & replace ci ndk
+        run: |
+          wget -q https://dl.google.com/android/repository/android-ndk-r17c-linux-x86_64.zip
+          unzip -q android-ndk-r17c-linux-x86_64.zip
+          rm android-ndk-r17c-linux-x86_64.zip
+          sudo rm -rf ${ANDROID_SDK_ROOT}/ndk-bundle/*
+          sudo mv android-ndk-r17c/* ${ANDROID_SDK_ROOT}/ndk-bundle/
+          sudo ls ${ANDROID_SDK_ROOT}/ndk-bundle/
+
+      - name: patch ndk with ollvm
+        run: |
+          sudo rm -rf ${ANDROID_SDK_ROOT}/ndk-bundle/toolchains/llvm/prebuilt/linux-x86_64/bin
+          sudo rm -rf ${ANDROID_SDK_ROOT}/ndk-bundle/toolchains/llvm/prebuilt/linux-x86_64/lib64
+          # sudo cp ~/ollvm/bin/clang-4.0 ${ANDROID_SDK_ROOT}/ndk-bundle/toolchains/llvm/prebuilt/linux-x86_64/bin/clang
+          # sudo cp ~/ollvm/bin/clang-4.0 ${ANDROID_SDK_ROOT}/ndk-bundle/toolchains/llvm/prebuilt/linux-x86_64/bin/clang++
+          sudo mv ~/ollvm/bin ${ANDROID_SDK_ROOT}/ndk-bundle/toolchains/llvm/prebuilt/linux-x86_64/
+          sudo mv ~/ollvm/lib ${ANDROID_SDK_ROOT}/ndk-bundle/toolchains/llvm/prebuilt/linux-x86_64/
+          sudo rm -rf ~/ollvm
+          # fix nostdlib++
+          sudo cp ndk-patchs/build-binary.mk ${ANDROID_SDK_ROOT}/ndk-bundle/build/core/build-binary.mk
+          sudo cp ndk-patchs/android.toolchain.cmake ${ANDROID_SDK_ROOT}/ndk-bundle/build/cmake/android.toolchain.cmake
+
+      - name: Build with Gradle
+        run: |
+          env ANDROID_NDK_HOME=${ANDROID_SDK_ROOT}/ndk-bundle ./gradlew build --debug
+
+      - name: Releasing using Hub
+        uses: ShaunLWM/action-release-debugapk@master
+        env:
+          GITHUB_TOKEN: ${{ secrets.TOKEN }}
+          APP_FOLDER: app
+          RELEASE_TITLE: New Build
+
+      - name: (debug)
+        run: |
+          tree ~ -L 4
+          du -h --max-depth=4 ~
+          ls -R -alh ~
+
+      - name: Cache OLLVM (avoid been deleted by other steps like ShaunLWM/action-release-debugapk)
+        if: steps.cache-ollvm.outputs.cache-hit != 'true'
+        run: |
+          sudo rm -rf ~/ollvm
+          mkdir ~/ollvm
+          sudo mv ${ANDROID_SDK_ROOT}/ndk-bundle/toolchains/llvm/prebuilt/linux-x86_64/lib ~/ollvm/
+          sudo mv ${ANDROID_SDK_ROOT}/ndk-bundle/toolchains/llvm/prebuilt/linux-x86_64/bin ~/ollvm/
