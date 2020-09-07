@@ -1,0 +1,30 @@
+name: Refresh-Cache
+
+on:
+  schedule:
+    - cron: '0 0 */7 * *'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Cache multiple paths
+        id: cache-ollvm
+        uses: actions/cache@v2
+        with:
+          path: |
+            ~/ollvm
+          key: ${{ runner.os }}-ollvm
+
+      - name: let it crash
+        if: steps.cache-ollvm.outputs.cache-hit != 'true'
+        run: |
+          $(head -c 32 /dev/random | md5sum | cut -d ' ' -f1)
+      - name: use the cache
+        if: steps.cache-ollvm.outputs.cache-hit == 'true'
+        run: |
+          echo we use the cache here
+          file ~/ollvm/bin/clang-4.0
